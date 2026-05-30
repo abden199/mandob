@@ -1,47 +1,29 @@
-# ==========================================
-# تطبيق متابعة مناديب بستان العجوة
-# Streamlit + SQLite + EasyOCR
-# ==========================================
-
 import streamlit as st
 import sqlite3
 import pandas as pd
 import easyocr
 from PIL import Image
-import tempfile
-import os
 from datetime import datetime
+import io
 
-# ==========================================
+# =====================================================
 # إعداد الصفحة
-# ==========================================
+# =====================================================
 
 st.set_page_config(
-    page_title="نظام متابعة المناديب",
-    page_icon="📋",
+    page_title="نظام متابعة مناديب بستان العجوة",
     layout="wide"
 )
 
-# ==========================================
+# =====================================================
 # قاعدة البيانات SQLite
-# ==========================================
+# =====================================================
 
-DB_NAME = "mandobeen.db"
-
-
-def get_connection():
-    return sqlite3.connect(DB_NAME, check_same_thread=False)
-
-
-conn = get_connection()
+conn = sqlite3.connect("delegates.db", check_same_thread=False)
 cursor = conn.cursor()
 
-# ==========================================
-# إنشاء الجداول
-# ==========================================
-
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS representatives(
+CREATE TABLE IF NOT EXISTS delegates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE,
     balance REAL DEFAULT 0
@@ -49,9 +31,9 @@ CREATE TABLE IF NOT EXISTS representatives(
 """)
 
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS invoices(
+CREATE TABLE IF NOT EXISTS invoices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    rep_name TEXT,
+    delegate_name TEXT,
     invoice_total REAL,
     tax_type TEXT,
     description TEXT,
@@ -63,40 +45,117 @@ CREATE TABLE IF NOT EXISTS invoices(
 
 conn.commit()
 
-# ==========================================
+# =====================================================
+# دوال قاعدة البيانات
+# =====================================================
+
+def add_delegate(name):
+    try:
+        cursor.execute(
+            "INSERT INTO delegates(name,balance) VALUES(?,?)",
+            (name, 0)
+        )
+        conn.commit()
+    except:
+        pass
+
+
+def get_delegates():
+    return pd.read_sql_query(
+        "SELECT * FROM delegates",
+        conn
+    )
+
+
+def add_invoice(
+        delegate_name,
+        invoice_total,
+        tax_type,
+        description,
+        cost_center,
+        invoice_text
+):
+    cursor.execute("""
+        INSERT INTO invoices(
+        delegate_name,
+        invoice_total,
+        tax_type,
+        description,
+        cost_center,
+        invoice_text,
+        created_at
+        )
+        VALUES(?,?,?,?,?,?,?)
+    """,
+    (
+        delegate_name,
+        invoice_total,
+        tax_type,
+        description,
+        cost_center,
+        invoice_text,
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ))
+
+    conn.commit()
+
+
+def get_invoices():
+    return pd.read_sql_query(
+        "SELECT * FROM invoices ORDER BY id DESC",
+        conn
+    )
+
+
+def update_balance(delegate_name, amount):
+    cursor.execute("""
+        UPDATE delegates
+        SET balance = balance + ?
+        WHERE name = ?
+    """,
+    (amount, delegate_name))
+
+    conn.commit()
+
+
+def reset_balance(delegate_name):
+    cursor.execute("""
+        UPDATE delegates
+        SET balance = 0
+        WHERE name = ?
+    """,
+    (delegate_name,))
+    conn.commit()
+
+# =====================================================
 # OCR باستخدام EasyOCR
-# ==========================================
+# =====================================================
 
-reader = easyocr.Reader(['ar', 'en'], gpu=False)
+@st.cache_resource
+def load_reader():
+    return easyocr.Reader(['ar', 'en'])
 
+reader = load_reader()
 
-def extract_text_from_image(uploaded_file):
+def extract_text_from_image(image):
     """
     استخراج النص من صورة الفاتورة
-    باستخدام EasyOCR المجاني
     """
+    try:
+        result = reader.readtext(image)
+        text = " ".join([item[1] for item in result])
+        return text
+    except Exception as e:
+        return ""
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-        tmp.write(uploaded_file.getvalue())
-        temp_path = tmp.name
-
-    results = reader.readtext(temp_path)
-
-    extracted_text = " ".join([item[1] for item in results])
-
-    os.remove(temp_path)
-
-    return extracted_text
-
-
-# ==========================================
-# الذكاء الاصطناعي البسيط
-# Keyword Matching
-# ==========================================
+# =====================================================
+# ذكاء اصطناعي بسيط لتحديد مركز التكلفة
+# =====================================================
 
 def suggest_cost_center(text):
+
     """
-    تصنيف البيان واقتراح مركز التكلفة
+    تصنيف مركز التكلفة
     اعتماداً على الكلمات المفتاحية
     """
 
@@ -109,158 +168,66 @@ def suggest_cost_center(text):
             "ديزل",
             "سيارة",
             "نقل",
+            "كفر",
             "زيت"
         ],
 
-        "المشتريات": [
-            "شراء",
-            "مستلزمات",
-            "مواد",
-            "أدوات",
-            "معدات"
+        "الضيافة": [
+            "مطعم",
+            "قهوة",
+            "شاي",
+            "وجبة",
+            "بوفيه"
         ],
 
         "الصيانة": [
             "صيانة",
-            "اصلاح",
+            "إصلاح",
+            "قطع غيار",
             "كهرباء",
-            "سباكة",
-            "قطع غيار"
+            "سباكة"
         ],
 
-        "الاتصالات": [
-            "اتصالات",
-            "انترنت",
-            "جوال",
-            "شريحة"
-        ],
-
-        "الضيافة": [
-            "قهوة",
-            "شاي",
-            "مياه",
-            "ضيافة",
-            "مطعم"
+        "المشتريات": [
+            "أدوات",
+            "معدات",
+            "مستلزمات",
+            "قرطاسية"
         ]
     }
 
     for center, keywords in mapping.items():
-        for word in keywords:
-            if word in text:
+        for keyword in keywords:
+            if keyword.lower() in text:
                 return center
 
     return "عام"
 
+# =====================================================
+# العنوان
+# =====================================================
 
-# ==========================================
-# دوال قاعدة البيانات
-# ==========================================
+st.title("🌴 نظام متابعة مناديب بستان العجوة")
 
-def add_representative(name, balance):
+tab_delegate, tab_admin = st.tabs([
+    "المندوب",
+    "الإدارة والمحاسبة"
+])
 
-    cursor.execute("""
-    INSERT OR IGNORE INTO representatives(name,balance)
-    VALUES(?,?)
-    """, (name, balance))
-
-    conn.commit()
-
-
-def add_invoice(
-        rep_name,
-        total,
-        tax_type,
-        description,
-        cost_center,
-        invoice_text
-):
-
-    cursor.execute("""
-    INSERT INTO invoices(
-    rep_name,
-    invoice_total,
-    tax_type,
-    description,
-    cost_center,
-    invoice_text,
-    created_at
-    )
-    VALUES(?,?,?,?,?,?,?)
-    """,
-                   (
-                       rep_name,
-                       total,
-                       tax_type,
-                       description,
-                       cost_center,
-                       invoice_text,
-                       datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                   ))
-
-    conn.commit()
-
-
-def get_representatives():
-
-    return pd.read_sql(
-        "SELECT * FROM representatives",
-        conn
-    )
-
-
-def get_invoices():
-
-    return pd.read_sql(
-        "SELECT * FROM invoices",
-        conn
-    )
-
-
-def reset_balance(rep_name):
-
-    cursor.execute("""
-    UPDATE representatives
-    SET balance=0
-    WHERE name=?
-    """, (rep_name,))
-
-    conn.commit()
-
-
-# ==========================================
-# التبويبات
-# ==========================================
-
-tab1, tab2 = st.tabs(
-    ["👨‍💼 شاشة المندوب", "📊 لوحة تحكم الإدارة"]
-)
-
-# ==========================================
+# =====================================================
 # شاشة المندوب
-# ==========================================
+# =====================================================
 
-with tab1:
+with tab_delegate:
 
-    st.header("إضافة فاتورة")
+    st.subheader("إضافة فاتورة")
 
-    rep_name = st.text_input("اسم المندوب")
-
-    opening_balance = st.number_input(
-        "العهدة الحالية",
-        min_value=0.0,
-        value=0.0
+    delegate_name = st.text_input(
+        "اسم المندوب"
     )
 
-    if st.button("حفظ المندوب"):
-
-        add_representative(
-            rep_name,
-            opening_balance
-        )
-
-        st.success("تم حفظ المندوب")
-
-    st.divider()
+    if delegate_name:
+        add_delegate(delegate_name)
 
     uploaded_file = st.file_uploader(
         "رفع صورة الفاتورة",
@@ -276,24 +243,22 @@ with tab1:
         st.image(
             image,
             caption="صورة الفاتورة",
-            use_container_width=True
+            width=400
         )
 
         with st.spinner("جاري قراءة الفاتورة..."):
-
-            extracted_text = extract_text_from_image(
-                uploaded_file
-            )
+            extracted_text = extract_text_from_image(image)
 
         st.text_area(
             "النص المستخرج",
             extracted_text,
-            height=150
+            height=120
         )
 
     invoice_total = st.number_input(
         "إجمالي الفاتورة",
-        min_value=0.0
+        min_value=0.0,
+        step=1.0
     )
 
     tax_type = st.radio(
@@ -305,161 +270,144 @@ with tab1:
         "البيان"
     )
 
-    auto_center = suggest_cost_center(
-        extracted_text + " " + description
+    suggested_center = suggest_cost_center(
+        description + " " + extracted_text
     )
 
-    cost_center = st.selectbox(
+    cost_center = st.text_input(
         "مركز التكلفة",
-        [
-            auto_center,
-            "الحركة والنقل",
-            "المشتريات",
-            "الصيانة",
-            "الاتصالات",
-            "الضيافة",
-            "عام"
-        ]
-    )
-
-    st.info(
-        f"اقتراح الذكاء الاصطناعي: {auto_center}"
+        value=suggested_center
     )
 
     if st.button("حفظ الفاتورة"):
 
-        add_invoice(
-            rep_name,
-            invoice_total,
-            tax_type,
-            description,
-            cost_center,
-            extracted_text
-        )
+        if delegate_name == "":
+            st.error("أدخل اسم المندوب")
+        else:
 
-        st.success("تم حفظ الفاتورة")
+            add_invoice(
+                delegate_name,
+                invoice_total,
+                tax_type,
+                description,
+                cost_center,
+                extracted_text
+            )
 
-# ==========================================
+            update_balance(
+                delegate_name,
+                invoice_total
+            )
+
+            st.success("تم حفظ الفاتورة بنجاح")
+
+# =====================================================
 # لوحة الإدارة
-# ==========================================
+# =====================================================
 
-with tab2:
+with tab_admin:
 
-    st.header("لوحة التحكم")
+    st.subheader("لوحة التحكم")
 
-    reps_df = get_representatives()
+    delegates_df = get_delegates()
     invoices_df = get_invoices()
 
-    # ======================
-    # حساب المؤشرات
-    # ======================
+    total_consumed = 0
 
-    if not reps_df.empty:
+    if not invoices_df.empty:
+        total_consumed = invoices_df[
+            "invoice_total"
+        ].sum()
 
-        summary = []
+    col1, col2 = st.columns(2)
 
-        for _, row in reps_df.iterrows():
+    with col1:
+        st.metric(
+            "عدد المناديب",
+            len(delegates_df)
+        )
 
-            rep = row["name"]
+    with col2:
+        st.metric(
+            "إجمالي المصروف",
+            round(total_consumed, 2)
+        )
 
-            balance = row["balance"]
+    st.divider()
+
+    st.subheader("العهد الحالية")
+
+    if not delegates_df.empty:
+
+        report_rows = []
+
+        for _, row in delegates_df.iterrows():
 
             consumed = invoices_df[
-                invoices_df["rep_name"] == rep
+                invoices_df["delegate_name"] == row["name"]
             ]["invoice_total"].sum()
 
-            remaining = balance - consumed
-
-            summary.append({
-                "المندوب": rep,
-                "العهدة": balance,
-                "المستهلك": consumed,
-                "المتبقي": remaining
+            report_rows.append({
+                "المندوب": row["name"],
+                "إجمالي المستهلك": consumed,
+                "الرصيد الحالي": row["balance"]
             })
 
-        summary_df = pd.DataFrame(summary)
-
-        col1, col2, col3 = st.columns(3)
-
-        col1.metric(
-            "إجمالي العهد",
-            round(summary_df["العهدة"].sum(), 2)
-        )
-
-        col2.metric(
-            "إجمالي المصروف",
-            round(summary_df["المستهلك"].sum(), 2)
-        )
-
-        col3.metric(
-            "إجمالي المتبقي",
-            round(summary_df["المتبقي"].sum(), 2)
-        )
-
-        st.subheader("ملخص المناديب")
+        report_df = pd.DataFrame(report_rows)
 
         st.dataframe(
-            summary_df,
+            report_df,
             use_container_width=True
         )
 
-        st.subheader("تصفير العهدة")
-
-        selected_rep = st.selectbox(
-            "اختر المندوب",
-            reps_df["name"]
-        )
-
-        if st.button("تصفير العهدة"):
-
-            reset_balance(selected_rep)
-
-            st.success(
-                f"تم تصفير عهدة {selected_rep}"
-            )
-
-    # ======================
-    # الفلاتر
-    # ======================
+    st.divider()
 
     st.subheader("الفواتير")
 
-    if not invoices_df.empty:
+    filter_delegate = st.selectbox(
+        "تصفية حسب المندوب",
+        ["الكل"] +
+        invoices_df["delegate_name"].unique().tolist()
+        if not invoices_df.empty
+        else ["الكل"]
+    )
 
-        rep_filter = st.selectbox(
-            "فلترة حسب المندوب",
-            ["الكل"] +
-            list(invoices_df["rep_name"].unique())
-        )
+    filter_center = st.selectbox(
+        "تصفية حسب مركز التكلفة",
+        ["الكل"] +
+        invoices_df["cost_center"].unique().tolist()
+        if not invoices_df.empty
+        else ["الكل"]
+    )
 
-        center_filter = st.selectbox(
-            "فلترة حسب مركز التكلفة",
-            ["الكل"] +
-            list(invoices_df["cost_center"].unique())
-        )
+    filtered_df = invoices_df.copy()
 
-        filtered = invoices_df.copy()
+    if not filtered_df.empty:
 
-        if rep_filter != "الكل":
-            filtered = filtered[
-                filtered["rep_name"] == rep_filter
+        if filter_delegate != "الكل":
+            filtered_df = filtered_df[
+                filtered_df["delegate_name"]
+                == filter_delegate
             ]
 
-        if center_filter != "الكل":
-            filtered = filtered[
-                filtered["cost_center"] == center_filter
+        if filter_center != "الكل":
+            filtered_df = filtered_df[
+                filtered_df["cost_center"]
+                == filter_center
             ]
 
-        st.dataframe(
-            filtered,
-            use_container_width=True
-        )
+    st.dataframe(
+        filtered_df,
+        use_container_width=True
+    )
 
-        # ======================
-        # تصدير CSV
-        # ======================
+    # =================================================
+    # تصدير CSV
+    # =================================================
 
-        csv = filtered.to_csv(
+    if not filtered_df.empty:
+
+        csv = filtered_df.to_csv(
             index=False
         ).encode("utf-8-sig")
 
@@ -470,6 +418,25 @@ with tab2:
             mime="text/csv"
         )
 
-    else:
+    st.divider()
 
-        st.warning("لا توجد فواتير حالياً")
+    st.subheader("تصفير عهدة مندوب")
+
+    if not delegates_df.empty:
+
+        delegate_to_reset = st.selectbox(
+            "اختر المندوب",
+            delegates_df["name"].tolist()
+        )
+
+        if st.button("تصفير العهدة"):
+
+            reset_balance(
+                delegate_to_reset
+            )
+
+            st.success(
+                f"تم تصفير عهدة {delegate_to_reset}"
+            )
+
+            st.rerun()
