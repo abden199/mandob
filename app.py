@@ -56,8 +56,6 @@ cur.execute("INSERT OR IGNORE INTO users(username,password,role) VALUES(?,?,?)",
             ("admin", hash_password("admin123"), "accountant"))
 cur.execute("INSERT OR IGNORE INTO users(username,password,role) VALUES(?,?,?)",
             ("user1", hash_password("user123"), "delegate"))
-            ("user2", hash_password("user123"), "delegate"))
-
 conn.commit()
 
 def auth(u,p):
