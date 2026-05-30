@@ -1,4 +1,7 @@
-# -*- coding: utf-8 -*-
+# ==========================================
+# تطبيق متابعة مناديب بستان العجوة
+# Streamlit + SQLite + EasyOCR
+# ==========================================
 
 import streamlit as st
 import sqlite3
@@ -6,16 +9,16 @@ import pandas as pd
 import easyocr
 from PIL import Image
 import tempfile
+import os
 from datetime import datetime
-from io import BytesIO
 
 # ==========================================
 # إعداد الصفحة
 # ==========================================
 
 st.set_page_config(
-    page_title="إدارة عهدة المشتريات",
-    page_icon="💰",
+    page_title="نظام متابعة المناديب",
+    page_icon="📋",
     layout="wide"
 )
 
@@ -23,11 +26,22 @@ st.set_page_config(
 # قاعدة البيانات SQLite
 # ==========================================
 
-conn = sqlite3.connect("custody.db", check_same_thread=False)
+DB_NAME = "mandobeen.db"
+
+
+def get_connection():
+    return sqlite3.connect(DB_NAME, check_same_thread=False)
+
+
+conn = get_connection()
 cursor = conn.cursor()
 
+# ==========================================
+# إنشاء الجداول
+# ==========================================
+
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS delegates(
+CREATE TABLE IF NOT EXISTS representatives(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE,
     balance REAL DEFAULT 0
@@ -37,7 +51,7 @@ CREATE TABLE IF NOT EXISTS delegates(
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS invoices(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    delegate_name TEXT,
+    rep_name TEXT,
     invoice_total REAL,
     tax_type TEXT,
     description TEXT,
@@ -50,140 +64,120 @@ CREATE TABLE IF NOT EXISTS invoices(
 conn.commit()
 
 # ==========================================
-# بيانات ابتدائية
+# OCR باستخدام EasyOCR
 # ==========================================
 
-for name in ["ابو غزل", "ابو محمود"]:
-    cursor.execute(
-        "INSERT OR IGNORE INTO delegates(name,balance) VALUES (?,?)",
-        (name, 10000)
-    )
+reader = easyocr.Reader(['ar', 'en'], gpu=False)
 
-conn.commit()
 
-# ==========================================
-# OCR
-# ==========================================
-
-@st.cache_resource
-def load_ocr():
+def extract_text_from_image(uploaded_file):
     """
-    تحميل نموذج EasyOCR مرة واحدة فقط
+    استخراج النص من صورة الفاتورة
+    باستخدام EasyOCR المجاني
     """
-    return easyocr.Reader(['ar', 'en'], gpu=False)
 
-reader = load_ocr()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+        tmp.write(uploaded_file.getvalue())
+        temp_path = tmp.name
 
-def extract_text_from_image(image):
-    """
-    استخراج النص من الفاتورة باستخدام OCR
-    """
-    results = reader.readtext(image)
+    results = reader.readtext(temp_path)
 
-    text = " ".join([item[1] for item in results])
+    extracted_text = " ".join([item[1] for item in results])
 
-    return text
+    os.remove(temp_path)
+
+    return extracted_text
 
 
 # ==========================================
-# ذكاء اصطناعي بسيط
+# الذكاء الاصطناعي البسيط
+# Keyword Matching
 # ==========================================
 
 def suggest_cost_center(text):
     """
-    دالة تصنيف تعتمد على الكلمات المفتاحية
-
-    يمكن استبدالها مستقبلاً بنموذج
-    Transformers مجاني مفتوح المصدر.
-
-    تقوم بقراءة النص المستخرج من الفاتورة
-    أو الوصف المدخل ثم تقترح مركز تكلفة.
+    تصنيف البيان واقتراح مركز التكلفة
+    اعتماداً على الكلمات المفتاحية
     """
 
     text = text.lower()
 
-    rules = {
-
+    mapping = {
         "الحركة والنقل": [
             "وقود",
             "بنزين",
             "ديزل",
             "سيارة",
             "نقل",
-            "مركبة"
+            "زيت"
+        ],
+
+        "المشتريات": [
+            "شراء",
+            "مستلزمات",
+            "مواد",
+            "أدوات",
+            "معدات"
         ],
 
         "الصيانة": [
             "صيانة",
             "اصلاح",
-            "قطع غيار",
-            "ورشة"
+            "كهرباء",
+            "سباكة",
+            "قطع غيار"
         ],
 
-        "المشتريات المكتبية": [
-            "قرطاسية",
-            "ورق",
-            "طابعة",
-            "حبر",
-            "مكتبية"
+        "الاتصالات": [
+            "اتصالات",
+            "انترنت",
+            "جوال",
+            "شريحة"
         ],
 
         "الضيافة": [
             "قهوة",
             "شاي",
-            "مطعم",
-            "وجبات",
-            "ضيافة"
+            "مياه",
+            "ضيافة",
+            "مطعم"
         ]
     }
 
-    for center, words in rules.items():
-
-        for word in words:
-
+    for center, keywords in mapping.items():
+        for word in keywords:
             if word in text:
                 return center
 
-    return "أخرى"
+    return "عام"
 
 
 # ==========================================
 # دوال قاعدة البيانات
 # ==========================================
 
-def get_delegates():
+def add_representative(name, balance):
 
-    return pd.read_sql(
-        "SELECT * FROM delegates",
-        conn
-    )
+    cursor.execute("""
+    INSERT OR IGNORE INTO representatives(name,balance)
+    VALUES(?,?)
+    """, (name, balance))
 
-
-def add_delegate(name):
-
-    try:
-        cursor.execute(
-            "INSERT INTO delegates(name,balance) VALUES (?,?)",
-            (name, 10000)
-        )
-
-        conn.commit()
-
-    except:
-        pass
+    conn.commit()
 
 
 def add_invoice(
-        delegate_name,
+        rep_name,
         total,
         tax_type,
         description,
         cost_center,
-        invoice_text):
+        invoice_text
+):
 
     cursor.execute("""
     INSERT INTO invoices(
-    delegate_name,
+    rep_name,
     invoice_total,
     tax_type,
     description,
@@ -191,92 +185,82 @@ def add_invoice(
     invoice_text,
     created_at
     )
-    VALUES (?,?,?,?,?,?,?)
+    VALUES(?,?,?,?,?,?,?)
     """,
-
-    (
-        delegate_name,
-        total,
-        tax_type,
-        description,
-        cost_center,
-        invoice_text,
-        datetime.now().strftime("%Y-%m-%d %H:%M")
-    )
-    )
-
-    cursor.execute("""
-    UPDATE delegates
-    SET balance = balance - ?
-    WHERE name = ?
-    """,
-
-    (
-        total,
-        delegate_name
-    )
-    )
+                   (
+                       rep_name,
+                       total,
+                       tax_type,
+                       description,
+                       cost_center,
+                       invoice_text,
+                       datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                   ))
 
     conn.commit()
 
 
-def reset_balance(delegate_name):
+def get_representatives():
+
+    return pd.read_sql(
+        "SELECT * FROM representatives",
+        conn
+    )
+
+
+def get_invoices():
+
+    return pd.read_sql(
+        "SELECT * FROM invoices",
+        conn
+    )
+
+
+def reset_balance(rep_name):
 
     cursor.execute("""
-    UPDATE delegates
-    SET balance = 10000
-    WHERE name = ?
-    """,
-
-    (delegate_name,)
-    )
+    UPDATE representatives
+    SET balance=0
+    WHERE name=?
+    """, (rep_name,))
 
     conn.commit()
 
 
 # ==========================================
-# Tabs
+# التبويبات
 # ==========================================
 
 tab1, tab2 = st.tabs(
-    [
-        "👨‍💼 شاشة المندوب",
-        "📊 لوحة الإدارة"
-    ]
+    ["👨‍💼 شاشة المندوب", "📊 لوحة تحكم الإدارة"]
 )
 
-# ===================================================
+# ==========================================
 # شاشة المندوب
-# ===================================================
+# ==========================================
 
 with tab1:
 
-    st.header("إدخال فاتورة جديدة")
+    st.header("إضافة فاتورة")
 
-    delegates_df = get_delegates()
+    rep_name = st.text_input("اسم المندوب")
 
-    delegate_names = delegates_df["name"].tolist()
-
-    selected_delegate = st.selectbox(
-        "اسم المندوب",
-        delegate_names
+    opening_balance = st.number_input(
+        "العهدة الحالية",
+        min_value=0.0,
+        value=0.0
     )
 
-    st.subheader("إضافة مندوب جديد")
+    if st.button("حفظ المندوب"):
 
-    new_delegate = st.text_input(
-        "اسم المندوب الجديد"
-    )
+        add_representative(
+            rep_name,
+            opening_balance
+        )
 
-    if st.button("إضافة المندوب"):
+        st.success("تم حفظ المندوب")
 
-        if new_delegate:
-
-            add_delegate(new_delegate)
-
-            st.success("تمت الإضافة")
-
-            st.rerun()
+    st.divider()
 
     uploaded_file = st.file_uploader(
         "رفع صورة الفاتورة",
@@ -289,14 +273,16 @@ with tab1:
 
         image = Image.open(uploaded_file)
 
-        st.image(image, width=300)
+        st.image(
+            image,
+            caption="صورة الفاتورة",
+            use_container_width=True
+        )
 
-        with tempfile.NamedTemporaryFile(delete=False) as tmp:
-
-            image.save(tmp.name)
+        with st.spinner("جاري قراءة الفاتورة..."):
 
             extracted_text = extract_text_from_image(
-                tmp.name
+                uploaded_file
             )
 
         st.text_area(
@@ -304,8 +290,6 @@ with tab1:
             extracted_text,
             height=150
         )
-
-    st.markdown("---")
 
     invoice_total = st.number_input(
         "إجمالي الفاتورة",
@@ -321,32 +305,31 @@ with tab1:
         "البيان"
     )
 
-    ai_text = description + " " + extracted_text
-
-    suggested_center = suggest_cost_center(
-        ai_text
+    auto_center = suggest_cost_center(
+        extracted_text + " " + description
     )
 
     cost_center = st.selectbox(
         "مركز التكلفة",
         [
-            suggested_center,
+            auto_center,
             "الحركة والنقل",
+            "المشتريات",
             "الصيانة",
-            "المشتريات المكتبية",
+            "الاتصالات",
             "الضيافة",
-            "أخرى"
+            "عام"
         ]
     )
 
     st.info(
-        f"اقتراح الذكاء الاصطناعي: {suggested_center}"
+        f"اقتراح الذكاء الاصطناعي: {auto_center}"
     )
 
     if st.button("حفظ الفاتورة"):
 
         add_invoice(
-            selected_delegate,
+            rep_name,
             invoice_total,
             tax_type,
             description,
@@ -354,160 +337,139 @@ with tab1:
             extracted_text
         )
 
-        st.success(
-            "تم حفظ الفاتورة بنجاح"
-        )
+        st.success("تم حفظ الفاتورة")
 
-# ===================================================
+# ==========================================
 # لوحة الإدارة
-# ===================================================
+# ==========================================
 
 with tab2:
 
     st.header("لوحة التحكم")
 
-    delegates = pd.read_sql(
-        "SELECT * FROM delegates",
-        conn
-    )
+    reps_df = get_representatives()
+    invoices_df = get_invoices()
 
-    invoices = pd.read_sql(
-        "SELECT * FROM invoices",
-        conn
-    )
+    # ======================
+    # حساب المؤشرات
+    # ======================
 
-    st.subheader("ملخص العهد")
+    if not reps_df.empty:
 
-    if not delegates.empty:
+        summary = []
 
-        total_balance = delegates["balance"].sum()
+        for _, row in reps_df.iterrows():
 
-        total_spent = invoices["invoice_total"].sum() \
-            if not invoices.empty else 0
+            rep = row["name"]
 
-        c1, c2 = st.columns(2)
+            balance = row["balance"]
 
-        c1.metric(
+            consumed = invoices_df[
+                invoices_df["rep_name"] == rep
+            ]["invoice_total"].sum()
+
+            remaining = balance - consumed
+
+            summary.append({
+                "المندوب": rep,
+                "العهدة": balance,
+                "المستهلك": consumed,
+                "المتبقي": remaining
+            })
+
+        summary_df = pd.DataFrame(summary)
+
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric(
+            "إجمالي العهد",
+            round(summary_df["العهدة"].sum(), 2)
+        )
+
+        col2.metric(
             "إجمالي المصروف",
-            f"{total_spent:,.2f}"
+            round(summary_df["المستهلك"].sum(), 2)
         )
 
-        c2.metric(
+        col3.metric(
             "إجمالي المتبقي",
-            f"{total_balance:,.2f}"
+            round(summary_df["المتبقي"].sum(), 2)
         )
 
-    st.markdown("---")
+        st.subheader("ملخص المناديب")
 
-    st.subheader("تفاصيل المندوبين")
-
-    summary = pd.read_sql("""
-
-    SELECT
-        d.name,
-        10000 AS original_custody,
-        IFNULL(
-        SUM(i.invoice_total),0
-        ) AS spent,
-        d.balance
-
-    FROM delegates d
-
-    LEFT JOIN invoices i
-    ON d.name=i.delegate_name
-
-    GROUP BY d.name
-
-    """, conn)
-
-    st.dataframe(
-        summary,
-        use_container_width=True
-    )
-
-    st.markdown("---")
-
-    st.subheader("تصفية الفواتير")
-
-    delegate_filter = st.selectbox(
-        "المندوب",
-        ["الكل"] + delegates["name"].tolist()
-    )
-
-    cost_filter = st.selectbox(
-        "مركز التكلفة",
-        ["الكل"] +
-        invoices["cost_center"].dropna()
-        .unique()
-        .tolist()
-        if not invoices.empty
-        else ["الكل"]
-    )
-
-    filtered = invoices.copy()
-
-    if delegate_filter != "الكل":
-
-        filtered = filtered[
-            filtered["delegate_name"]
-            == delegate_filter
-        ]
-
-    if cost_filter != "الكل":
-
-        filtered = filtered[
-            filtered["cost_center"]
-            == cost_filter
-        ]
-
-    st.dataframe(
-        filtered,
-        use_container_width=True
-    )
-
-    # ======================================
-    # تصدير Excel
-    # ======================================
-
-    output = BytesIO()
-
-    with pd.ExcelWriter(
-        output,
-        engine="openpyxl"
-    ) as writer:
-
-        filtered.to_excel(
-            writer,
-            index=False,
-            sheet_name="Invoices"
+        st.dataframe(
+            summary_df,
+            use_container_width=True
         )
 
-    st.download_button(
-        "📥 تصدير Excel",
-        data=output.getvalue(),
-        file_name="Invoices.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        st.subheader("تصفير العهدة")
 
-    # ======================================
-    # تصفير العهدة
-    # ======================================
-
-    st.markdown("---")
-
-    st.subheader("تصفير عهدة مندوب")
-
-    reset_delegate = st.selectbox(
-        "اختر المندوب",
-        delegates["name"].tolist()
-    )
-
-    if st.button("تصفير العهدة"):
-
-        reset_balance(reset_delegate)
-
-        st.success(
-            "تم تصفير العهدة بنجاح"
+        selected_rep = st.selectbox(
+            "اختر المندوب",
+            reps_df["name"]
         )
 
-        st.rerun()
+        if st.button("تصفير العهدة"):
+
+            reset_balance(selected_rep)
+
+            st.success(
+                f"تم تصفير عهدة {selected_rep}"
+            )
+
+    # ======================
+    # الفلاتر
+    # ======================
+
+    st.subheader("الفواتير")
+
+    if not invoices_df.empty:
+
+        rep_filter = st.selectbox(
+            "فلترة حسب المندوب",
+            ["الكل"] +
+            list(invoices_df["rep_name"].unique())
+        )
+
+        center_filter = st.selectbox(
+            "فلترة حسب مركز التكلفة",
+            ["الكل"] +
+            list(invoices_df["cost_center"].unique())
+        )
+
+        filtered = invoices_df.copy()
+
+        if rep_filter != "الكل":
+            filtered = filtered[
+                filtered["rep_name"] == rep_filter
+            ]
+
+        if center_filter != "الكل":
+            filtered = filtered[
+                filtered["cost_center"] == center_filter
+            ]
+
+        st.dataframe(
+            filtered,
+            use_container_width=True
+        )
+
+        # ======================
+        # تصدير CSV
+        # ======================
+
+        csv = filtered.to_csv(
+            index=False
+        ).encode("utf-8-sig")
+
+        st.download_button(
+            label="📥 تصدير CSV",
+            data=csv,
+            file_name="invoices.csv",
+            mime="text/csv"
+        )
+
+    else:
+
+        st.warning("لا توجد فواتير حالياً")
