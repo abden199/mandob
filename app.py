@@ -1,7 +1,4 @@
 
-
-1- أنشئ جدول جديد:
-
 CREATE TABLE IF NOT EXISTS advances(
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 username TEXT,
