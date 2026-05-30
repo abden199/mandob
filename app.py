@@ -139,7 +139,7 @@ else:
             st.session_state['role'] = ""
             st.rerun()
             
-    st.title("🌴 نظام إدارة ومتابعة مناديب بستان العجوة")
+    st.title("🌴تصفية عهدة مناديب بستان العجوة")
     st.markdown("---")
 
     # تحديد التبويبات المتاحة بناءً على نوع الصلاحية
@@ -161,7 +161,7 @@ else:
     if "📱 شاشة المندوب" in tabs_to_show:
         idx = tabs_to_show.index("📱 شاشة المندوب")
         with active_tabs[idx]:
-            st.header("تسجيل مصاريف وفواتير المندوب")
+            st.header("تسجيل الفواتير والمصاريف")
             
             cursor = conn.cursor()
             cursor.execute("SELECT DISTINCT cost_center FROM invoices")
